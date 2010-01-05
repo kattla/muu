@@ -185,6 +185,14 @@ sub get_position {
   return $query->position;
 }
 
+# Commands:
+# q - quit
+# n or enter - next track
+# p - previous track
+# s - shuffle
+# space - toggle playing/pausing
+# l - toggle last.fm submissions
+# left,right,up,down,pgup,pgdown - seek backward or forward
 
 sub print_pos {
   my $raw_pos = &get_position;
