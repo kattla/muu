@@ -1,0 +1,463 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+use diagnostics;
+
+use GStreamer -init;
+use Term::ReadKey;
+use Term::ANSIColor;
+use Cwd 'abs_path';
+use Data::Dumper;
+use Encode;
+use Getopt::Long;
+use File::Glob ':glob';
+use List::Util 'shuffle';
+
+binmode STDOUT, ":utf8";
+
+my $interupt;
+{
+  my %keys = GetControlChars;
+  $interupt = $keys{INTERRUPT};
+}
+
+my @files;
+my %conf;
+
+GetOptions (
+  'verbose|v' => \$conf{'verbose'},
+  'debug'     => \$conf{'debug'},
+  'pretend'   => \$conf{'pretend'},
+  'no-mbid'   => \$conf{'no-mbid'},
+  'no-lastfm' => \$conf{'no-lastfm'},
+  'stay'      => \$conf{'stay'},
+) or exit 1;
+
+&read_dir(".") unless @ARGV;
+
+for (@ARGV) {
+  if (-d) { &read_dir($_) }
+  elsif (-f) { push(@files, $_); }
+  elsif (/^[0-9]+$/) { $conf{'start_at'} = $_; }
+  else {
+    print "Unrecognized argument: $_\n";
+    &exit(1);
+  }
+}
+
+
+my $TIME_MULT = 1000000000;
+
+my %prev_tags;
+my %tags;
+my %meta;
+my $print_pos_id;
+
+my $loop = Glib::MainLoop -> new();
+my $gst_pipeline;
+
+if (defined $conf{'start_at'}) {
+  for (my $i=1; $i<$conf{'start_at'}; $i++) { shift @files }
+}
+
+my $index = 0;
+while ($index < scalar @files) {
+  $index = 0 if $index < 0;
+  %prev_tags = %tags;
+  %tags = ();
+  %meta = ();
+  $meta{'file'} = $files[$index];
+  &play_file;
+  $index++;
+}
+
+print "\r                     \n";
+&exit;
+
+sub exit {
+  my $code = $_[0] || 0;
+  ReadMode 0;
+  if ($conf{'stay'} and $code != 0) {
+    print "Exiting with code $code. Press enter to close.\n";
+    $_ = <STDIN>;
+  }
+  CORE::exit($code);
+}
+
+
+# Subrutines
+
+sub read_dir {
+  my $dir = $_ = $_[0] || $_;
+  s/([][{}~*?'])/\\$1/g;
+  if (not -d $dir) {
+    print "Warning: no such directory: $dir\n";
+    return;
+  }
+  for (bsd_glob "$_/*") {
+    chomp;
+    if (-d) { &read_dir($_); }
+    elsif (-f) {
+      if (&is_song) {
+        Encode::decode_utf8 $_;
+        push(@files,$_);
+      }
+    }
+    else {
+      print STDERR "Warning: no such file: $_\n";
+    }
+  }
+}
+
+
+sub is_song {
+  return /\.(mp3|ogg|flac|aac|m4a|ape|wma)$/i;
+}
+
+
+sub setup_playbin {
+  my $path = abs_path($meta{'file'});
+  my $playbin = GStreamer::ElementFactory -> make("playbin", "play");
+  $playbin -> set(uri => Glib::filename_to_uri $path, "localhost");
+  return $playbin;
+}
+
+
+sub play_file {
+  $gst_pipeline = &setup_playbin;
+  $gst_pipeline -> get_bus() -> add_watch(\&my_bus_callback, $loop);
+  $gst_pipeline -> set_state("playing");
+
+  chomp ($meta{'start_time'} = `date -u "+%Y-%m-%d %H:%M:%S"`);
+
+  ReadMode 4;
+  $loop -> run();
+}
+
+
+sub shellqw {
+  $_ = $_[0] || $_;
+  s/"/\\"/g;
+  return "\"$_\"";
+}
+
+sub submit {
+  if ($conf{'no-lastfm'}) {
+    return
+  }
+  my $cmd = "/usr/lib/lastfmsubmitd/lastfmsubmit";
+  $cmd .= " --artist " . &shellqw(&tag('artist'))
+       .  " --album " . &shellqw(&tag('album'))
+       .  " --title " . &shellqw(&tag('title'))
+       .  " --length " . &shellqw($meta{'len'})
+       .  " --time " . &shellqw($meta{'start_time'});
+  if ($meta{'mbid_track'} && not $conf{'no-mbid'}) {
+    $cmd .= " --mbid " . &shellqw($meta{'mbid_track'});
+  }
+  print "$cmd\n" if $conf{'debug'};
+  if (not $conf{'pretend'}) {
+    my $exitcode = system $cmd;
+    print "WARNING: lastfmsubmit failed.\n" if $exitcode != 0;
+  }
+}
+
+
+sub format_time {
+  my $sec = int($_[0] / $TIME_MULT);
+  my $min = int($sec / 60);
+  $sec -= $min * 60;
+  return sprintf("%02d:%02d",$min,$sec);
+}
+
+
+sub query_length {
+  my $query = GStreamer::Query::Duration->new ('time');
+  $gst_pipeline -> query($query);
+  $meta{'raw_len'} = $query->duration;
+  $meta{'len'} = &format_time($meta{'raw_len'});
+}
+
+
+sub get_position {
+  my $query = GStreamer::Query::Position->new ('time');
+  $gst_pipeline -> query($query);
+  return $query->position;
+}
+
+
+sub print_pos {
+  my $raw_pos = &get_position;
+  my $pos = int(100 * $raw_pos / $meta{'raw_len'});
+  my $key = ReadKey(-1) || "";
+  if ($key eq 'q' || $key eq $interupt) {
+    print "\n";
+    &end_track;
+    &exit(1) if $key eq $interupt;
+    &exit;
+  }
+  elsif ($key eq 'n' || $key eq "\xa") {
+    print "\n";
+    &end_track;
+  }
+  elsif ($key eq 'p') {
+    print "\n";
+    $index -= 2;
+    &end_track;
+  }
+  elsif ($key eq 's') {
+    print "\nshuffling\n";
+    @files = shuffle(@files);
+    $index = -1;
+    &end_track;
+  }
+  elsif ($key eq ' ') {
+    if (($gst_pipeline->get_state(0))[1] eq 'paused') {
+      $gst_pipeline->set_state('playing');
+    }
+    else {
+      $gst_pipeline->set_state('paused');
+    }
+  }
+  elsif ($key eq 'l') {
+    $conf{'no-lastfm'} = not $conf{'no-lastfm'};
+    if ( $conf{'no-lastfm'} ) { print "\nlast.fm off\n" }
+    else { print "\nlast.fm on\n" }
+  }
+  elsif ($key eq "\x1b") {
+    if (ReadKey(0) eq "\x5b") {
+      my $step = $TIME_MULT;
+      $key = ReadKey(0);
+      $step *= 30 if ($key eq "\x41");  # Up arrow
+      $step *= -30 if ($key eq "\x42"); # Down arrow
+      $step *= 10 if ($key eq "\x43");   # Right arrow
+      $step *= -10 if ($key eq "\x44");  # Left arrow
+      $step *= 60 if ($key eq "\x35" and ReadKey(0) eq "\x7e");   # Page up
+      $step *= -60 if ($key eq "\x36" and ReadKey(0) eq "\x7e");  # Page down
+      my $new_pos = $raw_pos + $step;
+      $new_pos = 0 if $new_pos < 0;
+      $gst_pipeline->seek(1.0, 'time', 'flush', 'set', $new_pos, 'none', -1);
+    }
+  }
+  #elsif ($key ne '') {
+  #  printf "Unrecognized: %x\n", ord($key);
+  #}
+  else {
+    local $| = 1;
+    print "\r                   \r";
+    print "$pos%  ", &format_time($raw_pos);
+    if (($gst_pipeline->get_state(0))[1] eq 'paused') {
+      print "  PAUSED"
+    }
+  }
+  return 1;
+}
+
+sub end_track {
+  Glib::Source->remove($print_pos_id) if $print_pos_id;
+  print "\r                   \r";
+  $loop -> quit();
+  my $pos = &get_position;
+  $gst_pipeline -> set_state("null");
+  return if $pos < 0;
+  if ($pos <= $meta{'raw_len'} / 2 and $pos <= 240 * $TIME_MULT) {
+    if ($meta{'raw_len'} / 2 < 240 * $TIME_MULT) {
+      print "Last.fm: 1/2 track not played, not submitting.\n" if $conf{'debug'};
+    }
+    else {
+      print "Last.fm: 240 seconds not played, not submitting.\n" if $conf{'debug'};
+    }
+  }
+  elsif ($meta{'raw_len'} <= 30 * $TIME_MULT) {
+    print "Last.fm: length is < 30 seconds, not submitting.\n" if $conf{'debug'};
+  }
+  else {
+    &submit;
+  }
+}
+
+
+sub tag {
+  my $key = $_[0];
+  my $data = $tags{$key};
+  if (ref $data) {
+    my @data = @$data;
+    print colored("Warning: Duplicate entries for $key: @data\n", 'red');
+    return $data[0];
+  }
+  else {
+    return $data;
+  }
+}
+
+
+sub add_tag {
+  my ($key, $data) = @_;
+  if ($tags{$key}) {
+    if ($key eq 'bitrate') {
+      $tags{'bitrate-is-variable'} = 1 if $data != $tags{$key};
+      $tags{$key} = $data;
+    }
+    else {
+      if (ref $tags{$key}) {
+        $tags{$key} = [@{$tags{$key}}, $data];
+      }
+      else {
+        $tags{$key} = [$tags{$key}, $data];
+      }
+    }
+  }
+  else {
+    $tags{$key} = $data;
+  }
+}
+    
+sub update_tags {
+  my $taglist = $_[0] || $_;
+  for ( keys %$taglist ) {
+    if ($_ eq 'extended-comment') {
+      for ( @{$taglist->{$_}} ) {
+        /^([^=]+)=(.*)$/ or die;
+        &add_tag($1,$2);
+      }
+    }
+    elsif ($_ eq 'private-id3v2-frame') {
+      for ( @{$taglist->{$_}} ) {
+        # Is there anything useful here?
+        print 'private-id3v2-frame: ', $_->data, "\n" if $conf{'debug'};
+      }
+    }
+    elsif ($_ eq 'private-qt-tag') {
+      for ( @{$taglist->{$_}} ) {
+        # Hack warning
+        $_ = $_->data;
+        if (/com\.apple\.iTunes/) {
+          /name(.+).data(.*)$/ or die $_;
+          my $name = $1;
+          my $data = $2;
+          $name = substr $name, 4, -3;
+          $data = substr $data, 8;
+          &add_tag($name,$data);
+        }
+        else {
+          # Ignore it
+          print 'Ignoring private quicktime tag: ', $_, "\n" if $conf{'debug'};
+        }
+      }
+    }
+    else {
+      my $key = $_;
+      for ( @{$taglist->{$key}} ) {
+        &add_tag($key, $_);
+      }
+    }
+  }
+}
+
+
+sub format_date {
+  $_ = $_[0] || $_;
+  # TODO
+}
+
+
+sub bitrate_is_low {
+  my $codec = &tag('audio-codec');
+  my $vbr = defined $tags{'bitrate-is-variable'};
+  my $min; # minimum bitrate
+
+  if ($codec eq 'Vorbis') {
+    $min = 120;
+  }
+
+  elsif ($vbr) {
+    $min = 150;
+  }
+
+  else {
+    $min = 200; # CBR sucks
+  }
+
+  return 0 if $codec eq 'FLAC'; # has no bitrate
+  return 0 if $codec eq 'MPEG-4 AAC audio'; # apparently has no bitrate either
+
+  return &tag('bitrate') < $min * 1000;
+}
+
+sub get_bitrate {
+  my $codec = &tag('audio-codec');
+  $codec = 'ogg' if $codec eq 'Vorbis';
+  $codec = 'mp3' if $codec eq 'MPEG 1 Audio, Layer 3 (MP3)';
+  $tags{'bitrate-is-variable'} = 1 if $codec eq 'ogg';
+  my $prefix = defined $tags{'bitrate-is-variable'} && '~';
+  my $number = int (&tag('bitrate') / 1000);
+  return "$codec $prefix$number kbit/s";
+}
+
+
+sub my_bus_callback {
+  my ($bus, $message, $loop) = @_;
+
+  if ($message -> type & "error") {
+    warn $message -> error;
+    &end_track;
+    &exit(1);
+  }
+
+  elsif ($message -> type & "eos") {
+    &end_track;
+  }
+  
+  elsif ($message -> type & "tag") {
+    print Dumper($message->tag_list),"\n" if $conf{'debug'};
+    &update_tags($message->tag_list);
+  }
+
+  elsif ($message -> type & "async-done") {
+    # ignore
+  }
+
+  elsif ($message -> type & "new-clock") {
+    &query_length;
+    print Dumper(\%tags),"\n" if $conf{'debug'};
+    if ((&tag('artist')||"") ne ($prev_tags{'artist'}||"") ||
+        (&tag('album')||"") ne ($prev_tags{'album'}||"")) {
+      print "\n";
+      print "Artist: ", colored(&tag('artist'),'bold'), "\n" if &tag('artist');
+      print "Album: ", colored(&tag('album'),'bold'), "\n" if &tag('album');
+      my $track_count = &tag('track-count') || &tag('totaltracks');
+      print "Tracks: ", sprintf("%02d",$track_count), "\n" if $track_count;
+      print "\n";
+    }
+    $meta{'mbid_track'} = &tag('musicbrainz-trackid') || &tag('MusicBrainz Track Id');
+    print colored("Warning: no musicbrainz data.\n",'red') unless $meta{'mbid_track'};
+    print "Track ",sprintf("%02d",&tag('track-number')),": " if &tag('track-number');
+    my $title = &tag('title')||$meta{'file'};
+    print colored($title, 'bold'), "  $meta{'len'}";
+    print "\033]0;$title\007";
+    if (&bitrate_is_low) { print "  ", colored(&get_bitrate, 'red bold') }
+    elsif ($conf{'verbose'}) { print "  ", &get_bitrate }
+    print "\n";
+    $print_pos_id = Glib::Timeout->add (200, \&print_pos);
+    if ($conf{'pretend'}) {
+      &end_track;
+      &submit;
+    }
+  }
+
+  elsif ($message -> type & "state-changed") {
+    # ignore
+  }
+
+  elsif ($message -> type & "duration") {
+    # not always recieved
+    # ignore
+  }
+
+  else {
+    print $message->type, "\n" if $conf{'verbose'};
+  }
+
+  # remove message from the queue
+  return 1;
+}
