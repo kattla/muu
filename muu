@@ -350,12 +350,16 @@ sub update_tags {
         # Hack warning
         $_ = $_->data;
         if (/com\.apple\.iTunes/) {
-          /name(.+).data(.*)$/ or die $_;
-          my $name = $1;
-          my $data = $2;
-          $name = substr $name, 4, -3;
-          $data = substr $data, 8;
-          &add_tag($name,$data);
+          if (/name(.+).data(.*)$/) {
+            my $name = $1;
+            my $data = $2;
+            $name = substr $name, 4, -3;
+            $data = substr $data, 8;
+            &add_tag($name,$data);
+          }
+          else {
+            print colored("Warning: Problem reading tag from $meta{file}.\n",'red');
+          }
         }
         else {
           # Ignore it
