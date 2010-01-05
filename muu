@@ -62,7 +62,7 @@ if (defined $conf{'start_at'}) {
 }
 
 my $index = 0;
-while ($index < scalar @files) {
+while (not $meta{'stop-after-track'} and $index < scalar @files) {
   $index = 0 if $index < 0;
   %prev_tags = %tags;
   %tags = ();
@@ -190,6 +190,7 @@ sub get_position {
 # n or enter - next track
 # p - previous track
 # s - shuffle
+# a - stop after current track
 # space - toggle playing/pausing
 # l - toggle last.fm submissions
 # left,right,up,down,pgup,pgdown - seek backward or forward
@@ -218,6 +219,15 @@ sub print_pos {
     @files = shuffle(@files);
     $index = -1;
     &end_track;
+  }
+  elsif ($key eq 'a') {
+    $meta{'stop-after-track'} = not $meta{'stop-after-track'};
+    if ($meta{'stop-after-track'}) {
+      print "\nwill stop after track\n";
+    }
+    else {
+      print "\nwon't stop after track\n";
+    }
   }
   elsif ($key eq ' ') {
     if (($gst_pipeline->get_state(0))[1] eq 'paused') {
