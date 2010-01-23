@@ -55,7 +55,7 @@ my %meta;
 my $print_pos_id;
 
 my $loop = Glib::MainLoop -> new();
-my $gst_pipeline;
+my $gst_pipeline = GStreamer::ElementFactory -> make("playbin", "play");
 
 if (defined $conf{'start_at'}) {
   for (my $i=1; $i<$conf{'start_at'}; $i++) { shift @files }
@@ -116,16 +116,9 @@ sub is_song {
 }
 
 
-sub setup_playbin {
-  my $path = abs_path($meta{'file'});
-  my $playbin = GStreamer::ElementFactory -> make("playbin", "play");
-  $playbin -> set(uri => Glib::filename_to_uri $path, "localhost");
-  return $playbin;
-}
-
-
 sub play_file {
-  $gst_pipeline = &setup_playbin;
+  my $path = abs_path($meta{'file'});
+  $gst_pipeline -> set(uri => Glib::filename_to_uri $path, "localhost");
   $gst_pipeline -> get_bus() -> add_watch(\&my_bus_callback, $loop);
   $gst_pipeline -> set_state("playing");
 
