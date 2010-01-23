@@ -194,6 +194,7 @@ sub get_position {
 # space - toggle playing/pausing
 # l - toggle last.fm submissions
 # left,right,up,down,pgup,pgdown - seek backward or forward
+# +/- - adjust (soft) volume
 
 sub print_pos {
   my $raw_pos = &get_position;
@@ -242,6 +243,20 @@ sub print_pos {
     if ( $conf{'no-lastfm'} ) { print "\nlast.fm off\n" }
     else { print "\nlast.fm on\n" }
   }
+  elsif ($key eq '+') {
+    my $vol = int(100*$gst_pipeline->get('volume') + 0.5) + 5;
+    $gst_pipeline->set(volume => $vol/100);
+    local $| = 1;
+    print "\rvolume: $vol%";
+    $meta{'status-delay'} = 1;
+  }
+  elsif ($key eq '-') {
+    my $vol = int(100*$gst_pipeline->get('volume') + 0.5) - 5;
+    $gst_pipeline->set(volume => $vol/100);
+    local $| = 1;
+    print "\rvolume: $vol%";
+    $meta{'status-delay'} = 1;
+  }
   elsif ($key eq "\x1b") {
     if (ReadKey(0) eq "\x5b") {
       my $step = $TIME_MULT;
@@ -260,7 +275,7 @@ sub print_pos {
   #elsif ($key ne '') {
   #  printf "Unrecognized: %x\n", ord($key);
   #}
-  else {
+  elsif (not $meta{'status-delay'}) {
     local $| = 1;
     print "\r                   \r";
     print "$pos%  ", &format_time($raw_pos);
@@ -268,6 +283,7 @@ sub print_pos {
       print "  PAUSED"
     }
   }
+  else { $meta{'status-delay'} = 0 }
   return 1;
 }
 
