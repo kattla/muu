@@ -31,6 +31,7 @@ GetOptions (
   'pretend'   => \$conf{'pretend'},
   'no-mbid'   => \$conf{'no-mbid'},
   'no-lastfm' => \$conf{'no-lastfm'},
+  'random'    => \$conf{'random'},
   'stay'      => \$conf{'stay'},
 ) or exit 1;
 
@@ -60,6 +61,8 @@ my $gst_pipeline = GStreamer::ElementFactory -> make("playbin", "play");
 if (defined $conf{'start_at'}) {
   for (my $i=1; $i<$conf{'start_at'}; $i++) { shift @files }
 }
+
+@files = &shuffle(@files) if $conf{'random'};
 
 my $index = 0;
 while (not $meta{'stop-after-track'} and $index < scalar @files) {
