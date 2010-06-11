@@ -345,7 +345,7 @@ sub add_tag {
       $tags{$key} = $data;
     }
     else {
-      if (ref $tags{$key}) {
+      if (ref $tags{$key} eq "ARRAY") {
         $tags{$key} = [@{$tags{$key}}, $data];
       }
       else {
