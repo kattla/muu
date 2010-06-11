@@ -250,6 +250,22 @@ sub print_pos {
     print "\rvolume: $vol%";
     $meta{'status-delay'} = 1;
   }
+  elsif ($key eq 'v') {
+    if ($conf{'verbose'}) {
+      if ($conf{'debug'}) {
+        $conf{'verbose'} = $conf{'debug'} = 0;
+        print "\rnormal verbosity\n";
+      }
+      else {
+        $conf{'debug'} = 1;
+        print "\rdebugging verbosity\n";
+      }
+    }
+    else {
+      $conf{'verbose'} = 1;
+      print "\rextra verbosity\n";
+    }
+  }
   elsif ($key eq "\x1b") {
     if (ReadKey(0) eq "\x5b") {
       my $step = $TIME_MULT;
@@ -486,7 +502,7 @@ sub my_bus_callback {
   }
 
   else {
-    print $message->type, "\n" if $conf{'verbose'};
+    print $message->type, "\n" if $conf{'debug'};
   }
 
   # remove message from the queue
