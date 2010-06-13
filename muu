@@ -57,6 +57,7 @@ my $print_pos_id;
 
 my $loop = Glib::MainLoop -> new();
 my $gst_pipeline = GStreamer::ElementFactory -> make("playbin", "play");
+$gst_pipeline -> set("audio-sink" => GStreamer::ElementFactory->make("gconfaudiosink", "sink"));
 
 if (defined $conf{'start_at'}) {
   for (my $i=1; $i<$conf{'start_at'}; $i++) { shift @files }
